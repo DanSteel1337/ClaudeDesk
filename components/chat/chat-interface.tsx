@@ -1,9 +1,7 @@
-// This is a simplified/refactored version of a potential ChatInterface
-// It needs to be adapted to fetch messages for a specific threadId and use projectId for /api/chat
 "use client"
 
 import { useState, useEffect, useRef, type FormEvent } from "react"
-import type { Message as MessageType } from "@/types/database" // Assuming Message type is defined
+import type { Message as MessageType } from "@/types/database"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -14,15 +12,14 @@ import remarkGfm from "remark-gfm"
 import { toast } from "sonner"
 
 interface ChatInterfaceProps {
-  initialMessages?: MessageType[] // Can be empty, fetched client-side
+  initialMessages?: MessageType[]
   chatThreadId: string
   projectId: string
   currentModel: string
 }
 
 interface DisplayMessage extends MessageType {
-  // For optimistic updates or client-side additions
-  id: string // Ensure ID is always string for keys
+  id: string
   isStreaming?: boolean
 }
 
@@ -57,6 +54,7 @@ export default function ChatInterface({
         const history = (await response.json()) as MessageType[]
         setMessages(history.map((m) => ({ ...m, id: m.id.toString() })))
       } catch (error) {
+        console.error("Error fetching message history:", error)
         toast.error((error as Error).message)
       } finally {
         setIsFetchingHistory(false)
@@ -74,12 +72,12 @@ export default function ChatInterface({
     if (!input.trim() || isLoading) return
 
     const userInput: DisplayMessage = {
-      id: Date.now().toString(), // Temporary ID for optimistic update
+      id: Date.now().toString(),
       chat_thread_id: chatThreadId,
       role: "user",
       content: input.trim(),
       created_at: new Date().toISOString(),
-      tokens_used: 0, // Placeholder
+      tokens_used: 0,
     }
 
     setMessages((prev) => [...prev, userInput])
@@ -87,9 +85,9 @@ export default function ChatInterface({
     setIsLoading(true)
 
     let assistantResponseContent = ""
-    const assistantMessageId = (Date.now() + 1).toString() // Temporary ID for streaming
+    const assistantMessageId = (Date.now() + 1).toString()
 
-    // Add a placeholder for the assistant's message for streaming
+    // Add placeholder for assistant's message
     setMessages((prev) => [
       ...prev,
       {
@@ -105,69 +103,95 @@ export default function ChatInterface({
 
     try {
       const response = await fetch("/api/chat", {
-        // This API needs to be updated for projectId
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/plain, application/json",
+        },
         body: JSON.stringify({
           message: userInput.content,
           chatThreadId: chatThreadId,
-          projectId: projectId, // Send projectId
+          projectId: projectId,
           model: currentModel,
-          // Include conversation history if your API expects it
-          // history: messages.slice(0, -2).map(m => ({ role: m.role, content: m.content })),
         }),
       })
 
-      if (!response.ok || !response.body) {
-        const errorData = await response.json().catch(() => ({ error: "Unknown error occurred" }))
-        throw new Error(errorData.error || `API error: ${response.status}`)
+      // Check if response is JSON (error) or streaming text
+      const contentType = response.headers.get("content-type")
+
+      if (!response.ok) {
+        let errorMessage = "Unknown error occurred"
+        try {
+          if (contentType?.includes("application/json")) {
+            const errorData = await response.json()
+            errorMessage = errorData.error || errorMessage
+          } else {
+            errorMessage = (await response.text()) || errorMessage
+          }
+        } catch (parseError) {
+          console.error("Error parsing error response:", parseError)
+          errorMessage = `HTTP ${response.status}: ${response.statusText}`
+        }
+        throw new Error(errorMessage)
+      }
+
+      if (!response.body) {
+        throw new Error("No response body received")
       }
 
       // Handle streaming response
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
-      let done = false
 
-      while (!done) {
-        const { value, done: readerDone } = await reader.read()
-        done = readerDone
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
         const chunk = decoder.decode(value, { stream: true })
         assistantResponseContent += chunk
 
         setMessages((prevMessages) =>
           prevMessages.map((msg) =>
-            msg.id === assistantMessageId ? { ...msg, content: assistantResponseContent, isStreaming: !done } : msg,
+            msg.id === assistantMessageId ? { ...msg, content: assistantResponseContent, isStreaming: false } : msg,
           ),
         )
       }
-      // After stream finishes, the last message update will have isStreaming: false
-      // The actual message saving (user + assistant) should happen in the /api/chat endpoint
-      // and it could return the persisted messages, or we refetch.
-      // For simplicity, we assume the API saves and we might refetch or rely on optimistic updates.
+
+      // Final update to remove streaming indicator
+      setMessages((prevMessages) =>
+        prevMessages.map((msg) => (msg.id === assistantMessageId ? { ...msg, isStreaming: false } : msg)),
+      )
     } catch (error) {
       console.error("Chat error:", error)
-      toast.error((error as Error).message || "Failed to get response from assistant.")
-      // Remove the streaming placeholder on error or replace with error message
+      const errorMessage = (error as Error).message || "Failed to get response from assistant."
+      toast.error(errorMessage)
+
+      // Replace streaming placeholder with error message
       setMessages((prev) =>
         prev.map((msg) =>
           msg.id === assistantMessageId
-            ? { ...msg, content: `Error: ${(error as Error).message}`, isStreaming: false }
+            ? {
+                ...msg,
+                content: `❌ Error: ${errorMessage}`,
+                isStreaming: false,
+              }
             : msg,
         ),
       )
     } finally {
       setIsLoading(false)
-      // Refetch messages to get actual IDs and created_at from DB
-      // This ensures consistency after the stream.
-      if (chatThreadId) {
-        // Ensure chatThreadId is valid before refetching
-        const response = await fetch(`/api/chat_threads/${chatThreadId}/messages`)
-        if (response.ok) {
-          const history = (await response.json()) as MessageType[]
-          setMessages(history.map((m) => ({ ...m, id: m.id.toString() })))
-        } else {
-          console.error("Failed to refetch messages after send.")
-          // Potentially notify user or handle gracefully
+
+      // Refetch messages to ensure consistency (only if no error occurred)
+      if (chatThreadId && assistantResponseContent) {
+        try {
+          const response = await fetch(`/api/chat_threads/${chatThreadId}/messages`)
+          if (response.ok) {
+            const history = (await response.json()) as MessageType[]
+            setMessages(history.map((m) => ({ ...m, id: m.id.toString() })))
+          }
+        } catch (refetchError) {
+          console.error("Failed to refetch messages after send:", refetchError)
+          // Don't show error to user for this background operation
         }
       }
     }
@@ -188,7 +212,7 @@ export default function ChatInterface({
         <div className="space-y-4">
           {messages.map((message, index) => (
             <div
-              key={message.id || index} // Use message.id if available, otherwise index
+              key={message.id || index}
               className={`flex items-end gap-2 ${message.role === "user" ? "justify-end" : ""}`}
             >
               {message.role === "assistant" && (
