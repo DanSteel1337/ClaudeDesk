@@ -81,44 +81,57 @@ export async function POST(req: NextRequest) {
 
     // 1. RAG: Fetch relevant document chunks for the projectId
     let contextText = ""
-    try {
-      if (process.env.OPENAI_API_KEY) {
+    const supabaseAdmin = createSupabaseAdminClient() // Correctly initialize admin client
+
+    if (!process.env.OPENAI_API_KEY) {
+      console.warn("OPENAI_API_KEY is not set. Skipping RAG.")
+    } else {
+      try {
+        console.log(
+          `[RAG] Attempting to fetch context for project ${projectId} with user query: "${message.substring(0, 50)}..."`,
+        )
         const embeddingResponse = await openai.embeddings.create({
           model: "text-embedding-3-small",
           input: message,
         })
         const queryEmbedding = embeddingResponse.data[0].embedding
+        console.log("[RAG] Query embedding generated.")
 
-        const supabaseAdmin = createSupabaseAdminClient()
         const { data: chunks, error: matchError } = await supabaseAdmin.rpc("match_document_chunks", {
           query_embedding: queryEmbedding,
-          match_threshold: 0.7,
-          match_count: 5,
+          match_threshold: 0.7, // Adjust as needed
+          match_count: 5, // Number of chunks to retrieve
           filter_user_id: user.id,
           filter_project_id: projectId,
         })
 
         if (matchError) {
-          console.error("Error matching document chunks:", matchError)
+          console.error("[RAG] Error matching document chunks:", matchError)
         } else if (chunks && chunks.length > 0) {
           contextText = chunks.map((chunk: any) => chunk.content).join("\n\n")
+          console.log(`[RAG] Found ${chunks.length} relevant chunks. Context length: ${contextText.length}`)
+        } else {
+          console.log("[RAG] No relevant chunks found for the query.")
         }
+      } catch (ragError) {
+        console.error("[RAG] Error during RAG embedding/matching:", ragError)
+        // Continue without context rather than failing the entire chat request
       }
-    } catch (ragError) {
-      console.error("Error during RAG embedding/matching:", ragError)
-      // Continue without context rather than failing
     }
 
-    const systemPrompt = contextText
-      ? `You are a helpful AI assistant. Use the following context from documents related to the current project to answer the user's question. If the context is not relevant, answer based on your general knowledge.
-
+    const systemPrompt = `You are a helpful AI assistant.
+${
+  contextText
+    ? `IMPORTANT: Base your answer on the following context provided from the user's project documents. If the user's question is directly addressed by this context, prioritize using it.
 Context:
 ---
 ${contextText}
 ---
-
-Please provide helpful and accurate responses based on the context above when relevant.`
-      : "You are a helpful AI assistant. Please provide helpful and accurate responses to the user's questions."
+When using the context, be direct and act as if you have full knowledge of these documents.`
+    : "You do not have specific project documents for context. Answer based on your general knowledge."
+}
+Always be helpful and honest.
+`
 
     // Construct messages for Anthropic API
     const messagesForApi: Anthropic.Messages.MessageParam[] = []
