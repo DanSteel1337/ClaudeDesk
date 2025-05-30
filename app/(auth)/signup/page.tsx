@@ -1,25 +1,29 @@
-import { AuthForm } from "@/components/auth/auth-form"
+import AuthForm from "@/components/auth/auth-form"
 import Link from "next/link"
+
+export const metadata = {
+  title: "Sign Up - ClaudeDesk",
+}
 
 export default function SignupPage() {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50">
-      <div className="max-w-md w-full space-y-8 p-8">
-        <div className="text-center">
-          <Link href="/" className="text-3xl font-bold hover:text-gray-700">
-            ClaudeDesk
+    <div className="flex min-h-screen flex-col justify-center items-center bg-gray-50 dark:bg-gray-900 px-4">
+      <div className="w-full max-w-md space-y-8">
+        <div>
+          <Link href="/" className="inline-block mb-6">
+            {/* Replace with your logo component or text */}
+            <h1 className="text-3xl font-bold text-center text-primary">ClaudeDesk</h1>
           </Link>
-          <p className="mt-2 text-gray-600">Unlimited Claude AI Documents</p>
+          <h2 className="mt-2 text-center text-2xl font-bold tracking-tight text-gray-900 dark:text-white">
+            Create your account
+          </h2>
         </div>
-        <AuthForm mode="signup" />
-        <div className="text-center">
-          <p className="text-sm text-gray-600">
-            Already have an account?{" "}
-            <Link href="/login" className="text-blue-600 hover:underline">
-              Sign in
-            </Link>
-          </p>
+        <div className="bg-white dark:bg-gray-800 shadow-xl rounded-lg p-8">
+          <AuthForm mode="signup" />
         </div>
+        <p className="mt-4 text-center text-sm text-gray-600 dark:text-gray-400">
+          By signing up, you agree to our (non-existent) Terms of Service.
+        </p>
       </div>
     </div>
   )

@@ -1,6 +1,32 @@
 export interface Database {
   public: {
     Tables: {
+      projects: {
+        Row: {
+          id: string
+          user_id: string
+          name: string
+          description: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          name: string
+          description?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          name?: string
+          description?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+      }
       user_settings: {
         Row: {
           id: string
@@ -31,6 +57,7 @@ export interface Database {
         Row: {
           id: string
           user_id: string
+          project_id: string // Added
           name: string
           file_url: string | null
           file_size: number | null
@@ -42,6 +69,7 @@ export interface Database {
         Insert: {
           id?: string
           user_id: string
+          project_id: string // Added
           name: string
           file_url?: string | null
           file_size?: number | null
@@ -53,6 +81,7 @@ export interface Database {
         Update: {
           id?: string
           user_id?: string
+          project_id?: string // Added
           name?: string
           file_url?: string | null
           file_size?: number | null
@@ -67,9 +96,10 @@ export interface Database {
           id: string
           document_id: string
           user_id: string
+          project_id: string // Added
           content: string
           context: string | null
-          embedding: number[] | null
+          embedding: number[] | null // In DB it's `vector`, TS type is `number[]`
           chunk_index: number | null
           tokens: number | null
           created_at: string
@@ -78,6 +108,7 @@ export interface Database {
           id?: string
           document_id: string
           user_id: string
+          project_id: string // Added
           content: string
           context?: string | null
           embedding?: number[] | null
@@ -89,6 +120,7 @@ export interface Database {
           id?: string
           document_id?: string
           user_id?: string
+          project_id?: string // Added
           content?: string
           context?: string | null
           embedding?: number[] | null
@@ -97,10 +129,12 @@ export interface Database {
           created_at?: string
         }
       }
-      conversations: {
+      chat_threads: {
+        // Renamed from conversations
         Row: {
           id: string
           user_id: string
+          project_id: string // Added
           title: string | null
           model: string
           created_at: string
@@ -109,6 +143,7 @@ export interface Database {
         Insert: {
           id?: string
           user_id: string
+          project_id: string // Added
           title?: string | null
           model?: string
           created_at?: string
@@ -117,6 +152,7 @@ export interface Database {
         Update: {
           id?: string
           user_id?: string
+          project_id?: string // Added
           title?: string | null
           model?: string
           created_at?: string
@@ -126,7 +162,7 @@ export interface Database {
       messages: {
         Row: {
           id: string
-          conversation_id: string
+          chat_thread_id: string // Renamed
           role: string
           content: string
           tokens_used: number
@@ -134,7 +170,7 @@ export interface Database {
         }
         Insert: {
           id?: string
-          conversation_id: string
+          chat_thread_id: string // Renamed
           role: string
           content: string
           tokens_used?: number
@@ -142,7 +178,7 @@ export interface Database {
         }
         Update: {
           id?: string
-          conversation_id?: string
+          chat_thread_id?: string // Renamed
           role?: string
           content?: string
           tokens_used?: number
@@ -150,11 +186,32 @@ export interface Database {
         }
       }
     }
+    Functions: {
+      // For the match_document_chunks function
+      match_document_chunks: {
+        Args: {
+          query_embedding: number[]
+          match_threshold: number
+          match_count: number
+          filter_user_id: string
+          filter_project_id: string // Added
+        }
+        Returns: {
+          // Define the structure of the returned rows
+          id: string
+          document_id: string
+          content: string
+          context: string | null
+          similarity: number
+        }[]
+      }
+    }
   }
 }
 
+export type Project = Database["public"]["Tables"]["projects"]["Row"]
 export type UserSettings = Database["public"]["Tables"]["user_settings"]["Row"]
 export type Document = Database["public"]["Tables"]["documents"]["Row"]
 export type DocumentChunk = Database["public"]["Tables"]["document_chunks"]["Row"]
-export type Conversation = Database["public"]["Tables"]["conversations"]["Row"]
+export type ChatThread = Database["public"]["Tables"]["chat_threads"]["Row"] // Renamed
 export type Message = Database["public"]["Tables"]["messages"]["Row"]
