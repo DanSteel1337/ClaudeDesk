@@ -10,15 +10,6 @@ import { OpenAI } from "openai"
 
 export const runtime = "edge" // Or 'nodejs' if using Node.js specific libraries
 
-if (!process.env.OPENAI_API_KEY) {
-  console.error("OPENAI_API_KEY is not set. Document processing cannot proceed with embeddings.")
-  // Update document status to 'failed' directly if OPENAI_API_KEY is essential and missing
-  // For now, we let it proceed and fail at OpenAI client initialization or first API call,
-  // which should be caught by the main try-catch.
-  // Alternatively, return an error response immediately:
-  // return NextResponse.json({ error: "Server configuration error: OpenAI API Key is missing." }, { status: 500 });
-}
-
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 })
@@ -83,11 +74,6 @@ function splitTextIntoChunks(text: string, maxTokens: number, overlapTokens: num
 
 export async function POST(request: NextRequest) {
   try {
-    if (!process.env.OPENAI_API_KEY) {
-      console.error("CRITICAL: OPENAI_API_KEY is not configured. Embeddings cannot be generated.")
-      // Optionally, update the document status to 'failed' here if you know the document ID
-      // For now, this log will appear, and the OpenAI call will fail later.
-    }
     const { documentId, projectId } = await request.json()
 
     if (!documentId || !projectId) {
