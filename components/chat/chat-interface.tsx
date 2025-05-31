@@ -6,10 +6,12 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
-import { Send, User, Bot, Loader2 } from "lucide-react"
+import { Send, User, Bot, Loader2, AlertCircle, RefreshCw } from "lucide-react"
+import { Alert, AlertDescription } from "@/components/ui/alert"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { toast } from "sonner"
+import { cn } from "@/lib/utils"
 
 interface ChatInterfaceProps {
   initialMessages?: MessageType[]
@@ -21,6 +23,7 @@ interface ChatInterfaceProps {
 interface DisplayMessage extends MessageType {
   id: string
   isStreaming?: boolean
+  error?: boolean
 }
 
 export default function ChatInterface({
@@ -35,7 +38,9 @@ export default function ChatInterface({
   const [input, setInput] = useState("")
   const [isLoading, setIsLoading] = useState(false)
   const [isFetchingHistory, setIsFetchingHistory] = useState(true)
+  const [connectionError, setConnectionError] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const abortControllerRef = useRef<AbortController | null>(null)
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -43,93 +48,108 @@ export default function ChatInterface({
 
   useEffect(scrollToBottom, [messages])
 
+  // Fetch message history on component mount
   useEffect(() => {
     const fetchMessageHistory = async () => {
+      if (!chatThreadId) {
+        setIsFetchingHistory(false)
+        return
+      }
+
       setIsFetchingHistory(true)
+      setConnectionError(null)
+
       try {
         const response = await fetch(`/api/chat_threads/${chatThreadId}/messages`)
+        
         if (!response.ok) {
-          throw new Error("Failed to fetch message history")
+          throw new Error(`Failed to fetch messages: ${response.statusText}`)
         }
+        
         const history = (await response.json()) as MessageType[]
         setMessages(history.map((m) => ({ ...m, id: m.id.toString() })))
       } catch (error) {
         console.error("Error fetching message history:", error)
-        toast.error((error as Error).message)
+        setConnectionError(error instanceof Error ? error.message : "Failed to load chat history")
+        toast.error("Failed to load chat history")
       } finally {
         setIsFetchingHistory(false)
       }
     }
-    if (chatThreadId) {
-      fetchMessageHistory()
-    } else {
-      setIsFetchingHistory(false)
-    }
+
+    fetchMessageHistory()
   }, [chatThreadId])
+
+  const retryConnection = () => {
+    setConnectionError(null)
+    window.location.reload()
+  }
 
   const handleSubmit = async (e?: FormEvent<HTMLFormElement>) => {
     e?.preventDefault()
+    
     if (!input.trim() || isLoading) return
 
-    const userInput: DisplayMessage = {
+    const userMessage = input.trim()
+    setInput("")
+    setConnectionError(null)
+
+    // Create user message
+    const userDisplayMessage: DisplayMessage = {
       id: Date.now().toString(),
       chat_thread_id: chatThreadId,
       role: "user",
-      content: input.trim(),
+      content: userMessage,
       created_at: new Date().toISOString(),
       tokens_used: 0,
     }
 
-    setMessages((prev) => [...prev, userInput])
-    setInput("")
+    setMessages((prev) => [...prev, userDisplayMessage])
     setIsLoading(true)
 
-    let assistantResponseContent = ""
-    const assistantMessageId = (Date.now() + 1).toString()
+    // Create abort controller for this request
+    abortControllerRef.current = new AbortController()
 
     // Add placeholder for assistant's message
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: assistantMessageId,
-        chat_thread_id: chatThreadId,
-        role: "assistant",
-        content: "",
-        created_at: new Date().toISOString(),
-        tokens_used: 0,
-        isStreaming: true,
-      },
-    ])
+    const assistantMessageId = (Date.now() + 1).toString()
+    const assistantPlaceholder: DisplayMessage = {
+      id: assistantMessageId,
+      chat_thread_id: chatThreadId,
+      role: "assistant",
+      content: "",
+      created_at: new Date().toISOString(),
+      tokens_used: 0,
+      isStreaming: true,
+    }
+
+    setMessages((prev) => [...prev, assistantPlaceholder])
 
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Accept: "text/plain, application/json",
         },
         body: JSON.stringify({
-          message: userInput.content,
+          message: userMessage,
           chatThreadId: chatThreadId,
           projectId: projectId,
           model: currentModel,
         }),
+        signal: abortControllerRef.current.signal,
       })
-
-      // Check if response is JSON (error) or streaming text
-      const contentType = response.headers.get("content-type")
 
       if (!response.ok) {
         let errorMessage = "Unknown error occurred"
         try {
+          const contentType = response.headers.get("content-type")
           if (contentType?.includes("application/json")) {
             const errorData = await response.json()
             errorMessage = errorData.error || errorMessage
           } else {
-            errorMessage = (await response.text()) || errorMessage
+            errorMessage = await response.text() || errorMessage
           }
-        } catch (parseError) {
-          console.error("Error parsing error response:", parseError)
+        } catch {
           errorMessage = `HTTP ${response.status}: ${response.statusText}`
         }
         throw new Error(errorMessage)
@@ -142,61 +162,96 @@ export default function ChatInterface({
       // Handle streaming response
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
+      let assistantResponseContent = ""
 
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
 
-        const chunk = decoder.decode(value, { stream: true })
-        assistantResponseContent += chunk
+          const chunk = decoder.decode(value, { stream: true })
+          assistantResponseContent += chunk
 
-        setMessages((prevMessages) =>
-          prevMessages.map((msg) =>
-            msg.id === assistantMessageId ? { ...msg, content: assistantResponseContent, isStreaming: false } : msg,
-          ),
-        )
+          // Update the assistant message with accumulated content
+          setMessages((prevMessages) =>
+            prevMessages.map((msg) =>
+              msg.id === assistantMessageId 
+                ? { 
+                    ...msg, 
+                    content: assistantResponseContent,
+                    isStreaming: true
+                  } 
+                : msg
+            )
+          )
+        }
+      } finally {
+        reader.releaseLock()
       }
 
-      // Final update to remove streaming indicator
+      // Mark streaming as complete
       setMessages((prevMessages) =>
-        prevMessages.map((msg) => (msg.id === assistantMessageId ? { ...msg, isStreaming: false } : msg)),
+        prevMessages.map((msg) =>
+          msg.id === assistantMessageId 
+            ? { ...msg, isStreaming: false }
+            : msg
+        )
       )
-    } catch (error) {
-      console.error("Chat error:", error)
-      const errorMessage = (error as Error).message || "Failed to get response from assistant."
-      toast.error(errorMessage)
 
-      // Replace streaming placeholder with error message
-      setMessages((prev) =>
-        prev.map((msg) =>
-          msg.id === assistantMessageId
-            ? {
-                ...msg,
-                content: `❌ Error: ${errorMessage}`,
-                isStreaming: false,
-              }
-            : msg,
-        ),
-      )
-    } finally {
-      setIsLoading(false)
-
-      // Refetch messages to ensure consistency (only if no error occurred)
-      if (chatThreadId && assistantResponseContent) {
+      // Refetch messages to ensure consistency with database
+      if (assistantResponseContent) {
         try {
-          const response = await fetch(`/api/chat_threads/${chatThreadId}/messages`)
-          if (response.ok) {
-            const history = (await response.json()) as MessageType[]
+          const historyResponse = await fetch(`/api/chat_threads/${chatThreadId}/messages`)
+          if (historyResponse.ok) {
+            const history = (await historyResponse.json()) as MessageType[]
             setMessages(history.map((m) => ({ ...m, id: m.id.toString() })))
           }
         } catch (refetchError) {
-          console.error("Failed to refetch messages after send:", refetchError)
+          console.error("Failed to refetch messages:", refetchError)
           // Don't show error to user for this background operation
         }
       }
+
+    } catch (error) {
+      console.error("Chat error:", error)
+      
+      const isAborted = error instanceof Error && error.name === 'AbortError'
+      if (isAborted) {
+        toast.info("Message cancelled")
+      } else {
+        const errorMessage = error instanceof Error ? error.message : "Failed to get response"
+        toast.error(errorMessage)
+        setConnectionError(errorMessage)
+      }
+
+      // Replace streaming placeholder with error message or remove if aborted
+      setMessages((prev) =>
+        isAborted 
+          ? prev.filter(msg => msg.id !== assistantMessageId)
+          : prev.map((msg) =>
+              msg.id === assistantMessageId
+                ? {
+                    ...msg,
+                    content: `❌ Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+                    isStreaming: false,
+                    error: true,
+                  }
+                : msg
+            )
+      )
+    } finally {
+      setIsLoading(false)
+      abortControllerRef.current = null
     }
   }
 
+  const cancelRequest = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+    }
+  }
+
+  // Show loading state while fetching history
   if (isFetchingHistory) {
     return (
       <div className="flex flex-col items-center justify-center h-full p-4">
@@ -206,53 +261,142 @@ export default function ChatInterface({
     )
   }
 
+  // Show connection error
+  if (connectionError && messages.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full p-4">
+        <Alert className="max-w-md">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>
+            Failed to load chat: {connectionError}
+          </AlertDescription>
+        </Alert>
+        <Button onClick={retryConnection} className="mt-4" variant="outline">
+          <RefreshCw className="h-4 w-4 mr-2" />
+          Retry
+        </Button>
+      </div>
+    )
+  }
+
   return (
-    <div className="flex flex-col h-full p-4 bg-background">
-      <ScrollArea className="flex-grow mb-4 pr-4">
-        <div className="space-y-4">
-          {messages.map((message, index) => (
-            <div
-              key={message.id || index}
-              className={`flex items-end gap-2 ${message.role === "user" ? "justify-end" : ""}`}
-            >
-              {message.role === "assistant" && (
-                <Avatar className="h-8 w-8">
-                  <AvatarFallback>
-                    <Bot size={18} />
-                  </AvatarFallback>
-                </Avatar>
-              )}
-              <div
-                className={`max-w-[70%] rounded-lg px-3 py-2 text-sm ${
-                  message.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted"
-                }`}
-              >
-                <Markdown remarkPlugins={[remarkGfm]}>{message.content + (message.isStreaming ? "▍" : "")}</Markdown>
-              </div>
-              {message.role === "user" && (
-                <Avatar className="h-8 w-8">
-                  <AvatarFallback>
-                    <User size={18} />
-                  </AvatarFallback>
-                </Avatar>
-              )}
+    <div className="flex flex-col h-full bg-background">
+      <ScrollArea className="flex-grow p-4">
+        <div className="space-y-4 max-w-4xl mx-auto">
+          {messages.length === 0 ? (
+            <div className="text-center text-muted-foreground py-8">
+              <Bot className="h-12 w-12 mx-auto mb-4 opacity-50" />
+              <p className="text-lg font-medium">Start a conversation</p>
+              <p className="text-sm">Ask me anything about your documents in this project.</p>
             </div>
-          ))}
+          ) : (
+            messages.map((message, index) => (
+              <div
+                key={message.id || index}
+                className={cn(
+                  "flex items-start gap-3",
+                  message.role === "user" ? "justify-end" : "justify-start"
+                )}
+              >
+                {message.role === "assistant" && (
+                  <Avatar className="h-8 w-8 shrink-0">
+                    <AvatarFallback>
+                      <Bot size={18} />
+                    </AvatarFallback>
+                  </Avatar>
+                )}
+                
+                <div
+                  className={cn(
+                    "max-w-[80%] rounded-lg px-4 py-2 text-sm",
+                    message.role === "user"
+                      ? "bg-primary text-primary-foreground"
+                      : message.error
+                      ? "bg-destructive/10 text-destructive border border-destructive/20"
+                      : "bg-muted"
+                  )}
+                >
+                  <div className="prose prose-sm dark:prose-invert max-w-none">
+                    <Markdown remarkPlugins={[remarkGfm]}>
+                      {message.content + (message.isStreaming ? "▍" : "")}
+                    </Markdown>
+                  </div>
+                  
+                  {message.isStreaming && (
+                    <div className="flex items-center gap-1 mt-2 text-xs text-muted-foreground">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      <span>Thinking...</span>
+                    </div>
+                  )}
+                </div>
+
+                {message.role === "user" && (
+                  <Avatar className="h-8 w-8 shrink-0">
+                    <AvatarFallback>
+                      <User size={18} />
+                    </AvatarFallback>
+                  </Avatar>
+                )}
+              </div>
+            ))
+          )}
         </div>
         <div ref={messagesEndRef} />
       </ScrollArea>
-      <form onSubmit={handleSubmit} className="flex items-center gap-2">
-        <Input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Type your message..."
-          className="flex-grow"
-          disabled={isLoading}
-        />
-        <Button type="submit" disabled={isLoading || !input.trim()} size="icon">
-          {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-        </Button>
-      </form>
+
+      {/* Connection error banner */}
+      {connectionError && messages.length > 0 && (
+        <div className="px-4 py-2 border-t">
+          <Alert variant="destructive">
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription className="flex items-center justify-between">
+              <span>Connection error: {connectionError}</span>
+              <Button onClick={retryConnection} size="sm" variant="outline">
+                Retry
+              </Button>
+            </AlertDescription>
+          </Alert>
+        </div>
+      )}
+
+      {/* Input form */}
+      <div className="p-4 border-t">
+        <form onSubmit={handleSubmit} className="flex items-center gap-2 max-w-4xl mx-auto">
+          <Input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Ask about your documents..."
+            className="flex-grow"
+            disabled={isLoading}
+            maxLength={4000}
+          />
+          
+          {isLoading ? (
+            <Button 
+              onClick={cancelRequest} 
+              size="icon" 
+              variant="outline"
+              type="button"
+              title="Cancel request"
+            >
+              <Loader2 className="h-4 w-4 animate-spin" />
+            </Button>
+          ) : (
+            <Button 
+              type="submit" 
+              disabled={!input.trim()} 
+              size="icon"
+              title="Send message"
+            >
+              <Send className="h-4 w-4" />
+            </Button>
+          )}
+        </form>
+        
+        <p className="text-xs text-muted-foreground text-center mt-2 max-w-4xl mx-auto">
+          Model: {currentModel} • {input.length}/4000 characters
+        </p>
+      </div>
     </div>
   )
 }
