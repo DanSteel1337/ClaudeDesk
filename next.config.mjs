@@ -9,14 +9,9 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
-  experimental: {
-    // Required for pdf-parse and mammoth to work in serverless environment
-    serverComponentsExternalPackages: ['pdf-parse', 'mammoth'],
-  },
-  // Environment variables that should be available at build time
-  env: {
-    CUSTOM_KEY: process.env.CUSTOM_KEY,
-  },
+  // Updated: moved from experimental.serverComponentsExternalPackages to serverExternalPackages
+  serverExternalPackages: ['pdf-parse', 'mammoth'],
+  
   // Security headers
   async headers() {
     return [
@@ -39,6 +34,7 @@ const nextConfig = {
       },
     ]
   },
+  
   // Redirects for better UX
   async redirects() {
     return [
@@ -49,23 +45,13 @@ const nextConfig = {
       },
     ]
   },
-  // Webpack configuration for better bundle optimization
-  webpack: (config, { buildId, dev, isServer, defaultLoaders, webpack }) => {
-    // Optimize for better performance
-    if (!dev && !isServer) {
-      config.resolve.alias = {
-        ...config.resolve.alias,
-        '@': require('path').resolve(__dirname),
-      }
-    }
-    
-    // Handle pdf-parse and mammoth dependencies
+  
+  // Simplified webpack configuration
+  webpack: (config, { isServer }) => {
+    // Handle server-side externals for document processing libraries
     if (isServer) {
       config.externals = config.externals || []
-      config.externals.push({
-        'pdf-parse': 'commonjs pdf-parse',
-        'mammoth': 'commonjs mammoth',
-      })
+      config.externals.push('pdf-parse', 'mammoth')
     }
 
     return config
