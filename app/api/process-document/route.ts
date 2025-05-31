@@ -1,5 +1,3 @@
-// app/api/process-document/route.ts - BULLETPROOF VERSION
-
 import { type NextRequest, NextResponse } from "next/server"
 import { createSupabaseAdminClient } from "@/lib/supabase/admin"
 import { OpenAI } from "openai"
